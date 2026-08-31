@@ -11,31 +11,41 @@
 - Dynamic identity evolution based on semantic similarity
 - Meaning formation through accumulation
 
-It uses cosine similarity over pre-embedded memory content (via [STEME](https://github.com/timchensuper999/STEME) or similar engines).
+It classifies memories against cluster identities via zero-shot NLI (through [STEME](https://github.com/tim-chen-yen-ting/steme)'s `STEME_nli`) rather than raw centroid-cosine distance — so absorption asks "does this memory imply the same concept?" instead of "is this embedding close to a drifted centroid?", which avoids the cosine-crowding collapse that plain centroid matching runs into as clusters accumulate.
 
 ---
 
 ## 🔧 Core API
 
-- `add_to_cluster(memory, clusters)`  
-   Adds a new memory to the best-fitting semantic cluster, or creates a new one if no match meets the similarity threshold. Each memory is expected to contain:
+- `add_to_cluster(memory, tag_pool=None, meta_tag_pool=None, threshold=0.15)`
+   Adds a new memory to the best-fitting cluster by NLI confidence against existing cluster names, or creates a new one (named via NLI against `meta_tag_pool`) if nothing clears `threshold`. Mutates `tag_pool` in place. Each memory is expected to contain:
    ```python
    {
        "content": "I believe in freedom",
        "importance": 0.9
    }
-  ```
+   ```
+   Each cluster in `tag_pool` is a dict: `{"name", "centroid", "net_importance"}`. The
+   centroid is still cosine-averaged and maintained on every absorption — it's kept for
+   downstream uses like conflict detection, even though it no longer drives the
+   absorption decision itself.
+
+- `detect_belief_conflicts(belief_clusters, threshold=-0.6)`
+   Scans all cluster pairs for centroid cosine similarity below `threshold`, returning
+   `(cluster_a, cluster_b, similarity, importance_a, importance_b)` tuples — i.e. beliefs
+   that have drifted into semantic opposition.
+
 Clusters are dynamically updated with:
-- Recalculated centroids
-- Accumulated importance
+- Recalculated (and re-normalized) centroids
+- Accumulated importance (EMA-weighted: `old_weight * 0.95 + memory_importance`)
 - Memory membership
 
 --- 
 
 ## 💡 Example Usage
 ```python
-from sysMod.blocKit import add_to_cluster
-from sysMod.stemeKit import embed
+from bloc_core import add_to_cluster
+from steme_core import embed
 memories = [
     {"content": "I believe in freedom", "importance": 0.9},
     {"content": "Order must be preserved", "importance": 0.8},
@@ -52,7 +62,7 @@ meta_clusters = [
     "Discipline", "Autonomy", "Loyalty", "Obedience", "Responsibility",
 ]
 for mem in memories:
-    add_to_cluster(mem, clusters,meta_clusters,0.7)
+    add_to_cluster(mem, clusters, meta_clusters, threshold=0.15)
 
 print("\nClustered Memory:")
 for c in clusters:
@@ -70,8 +80,16 @@ for c in clusters:
 ---
 
 ## 🔄 Embedding Compatibility
-BLOC assumes your memory entries are embedded using a tool like STEME.\
-If no vector field is present in a memory object, BLOC will auto-embed using content.
+BLOC depends on [STEME](https://github.com/tim-chen-yen-ting/steme) directly — `embed`
+for centroid vectors and `STEME_nli` for cluster absorption/naming, not just as a
+loosely-compatible companion tool. Installing BLOC pulls STEME in as a dependency.
+If a memory's `content` is already a vector (`np.ndarray`), BLOC uses it as-is instead
+of re-embedding.
+
+## ⛓️ Installation
+```bash
+pip install git+https://github.com/tim-chen-yen-ting/bloc.git
+```
 
 ---
 

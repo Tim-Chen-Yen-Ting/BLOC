@@ -1,0 +1,23 @@
+[project]
+name = "bloc"
+version = "0.2.0"
+description = "Belief & Label-Oriented Clustering — incremental, NLI-driven clustering of belief/memory embeddings, with conflict detection between clusters."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "steme @ git+https://github.com/tim-chen-yen-ting/steme.git",
+    "numpy",
+    "scikit-learn",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+bench = ["psutil"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["bloc_core"]

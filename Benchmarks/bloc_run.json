@@ -1,0 +1,48 @@
+{
+  "params": {
+    "n": 2000,
+    "dim": 384,
+    "thresh": 0.42,
+    "drift": 0.002,
+    "p_new": 0.001,
+    "text_embeddings": true,
+    "model_name": "all-MiniLM-L6-v2",
+    "kmeans_batch": 4096,
+    "kmeans_subsample": 20000
+  },
+  "ops_sec": {
+    "incremental": 166.3496665821283,
+    "kmeans_global": 403.7487506296654,
+    "minibatch": 601.0293890396499
+  },
+  "quality": {
+    "incremental": {
+      "ARI": 0.18186055277997415,
+      "purity": 1.0,
+      "silhouette": 0.999998152256012
+    },
+    "kmeans_global": {
+      "ARI": 0.18186055277997415,
+      "purity": 1.0,
+      "silhouette": 0.999998152256012
+    },
+    "minibatch": {
+      "ARI": 0.18186055277997415,
+      "purity": 1.0,
+      "silhouette": 0.999998152256012
+    }
+  },
+  "diagnostics": {
+    "n_clusters_inc": 81,
+    "singleton_rate": 0.0,
+    "avg_cluster_size": 24.691358024691358,
+    "p99_cluster_size": 35.0
+  },
+  "env": {
+    "python": "3.13.3",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel"
+  },
+  "peak_ram_mb": 525.3828125,
+  "timestamp": 1788167348.2768269
+}
