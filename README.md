@@ -17,8 +17,8 @@ It classifies memories against cluster identities via zero-shot NLI (through [ST
 
 ## 🔧 Core API
 
-- `add_to_cluster(memory, tag_pool=None, meta_tag_pool=None, threshold=0.15)`
-   Adds a new memory to the best-fitting cluster by NLI confidence against existing cluster names, or creates a new one (named via NLI against `meta_tag_pool`) if nothing clears `threshold`. Mutates `tag_pool` in place. Each memory is expected to contain:
+- `add_to_cluster(memory, tag_pool=None, meta_tag_pool=None, threshold=0.15, floor=0.0)`
+   Adds a new memory to the best-fitting cluster by NLI confidence against existing cluster names, or creates a new one (named via NLI against `meta_tag_pool`) if nothing clears `threshold`. `floor` is a separate, lower confidence bar on that new-cluster naming step — if the best-matching label in `meta_tag_pool` doesn't even clear `floor`, the memory isn't forced into any cluster and `None` is returned instead. Mutates `tag_pool` in place. Each memory is expected to contain:
    ```python
    {
        "content": "I believe in freedom",

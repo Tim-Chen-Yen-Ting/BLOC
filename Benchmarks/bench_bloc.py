@@ -25,13 +25,16 @@ from bloc_core import add_to_cluster
 # alongside KMeans/MiniBatchKMeans. Not used anywhere in production —
 # runtime code calls add_to_cluster() directly.
 class IncrementalClusterer:
-    def __init__(self, dim, thresh=0.35):
+    UNCLUSTERED = -1  # add_to_cluster() returns None when floor rejects every candidate label
+
+    def __init__(self, dim, thresh=0.35, floor=0.0):
         self.tag_pool = []
         self.meta_tag_pool = []  # Your STEME tag dictionary
         self.name_to_id = {}  # Maps cluster names to integer IDs
         self.id_to_name = {}  # Maps integer IDs to cluster names
         self.next_id = 0
         self.thresh = thresh
+        self.floor = floor
 
     def update(self, x):
         # If input is already a vector, use as is; otherwise embed it
@@ -49,8 +52,11 @@ class IncrementalClusterer:
             memory=memory,
             tag_pool=self.tag_pool,
             meta_tag_pool=self.meta_tag_pool,
-            threshold=self.thresh
+            threshold=self.thresh,
+            floor=self.floor,
         )
+        if cluster_name is None:
+            return self.UNCLUSTERED
 
         # Ensure deterministic integer ID per cluster name
         if cluster_name not in self.name_to_id:
@@ -72,7 +78,6 @@ class IncrementalClusterer:
         """Returns the integer index for a given cluster name."""
         return self.name_to_id.get(name, None)
 
-IncrementalImpl = IncrementalClusterer
 # -----------------------------
 # Synthetic streaming generator
 # -----------------------------
@@ -120,15 +125,21 @@ def make_stream(n=50000, dim=384, k_true=8, drift=0.002, p_new=0.001, seed=7,
 
 
 # -----------------------------
-# Simple reference incremental clusterer (fallback)
+# Legacy-style reference incremental clusterer
 # -----------------------------
 class SimpleIncrementalClusterer:
     """
-    Cosine-based online clusterer:
+    Cosine-based online clusterer, standing in for bloc_core's pre-NLI algorithm
+    (matched purely on centroid cosine distance, no text/NLI required):
     - keep running centroids (L2-normalized)
     - if max sim < thresh -> start new cluster (with small epsilon slack)
     - else merge into nearest (EMA update)
-    Deterministic and fast; not sophisticated.
+    Deterministic and fast; not sophisticated. Run explicitly alongside the current
+    NLI-based IncrementalClusterer so the two are directly comparable — bloc_core's
+    add_to_cluster() only does NLI matching when memory['content'] is real text, so on
+    a vector-only stream (no --text-emb) it can't cluster meaningfully at all; this
+    class is what shows whether the underlying stream/drift setup is still "clusterable"
+    in principle.
     """
     def __init__(self, dim, thresh=0.6, ema=0.5, near_eps=0.02):
         self.dim = dim
@@ -173,15 +184,6 @@ class SimpleIncrementalClusterer:
         return len(self.counts)
 
 
-def get_incremental(dim, thresh):
-    if IncrementalImpl is not None: #not
-        try:
-            return IncrementalImpl(dim=dim, thresh=thresh)  # adapt if your ctor differs
-        except Exception:
-            pass
-    return SimpleIncrementalClusterer(dim=dim, thresh=thresh)
-
-
 # -----------------------------
 # Metrics
 # -----------------------------
@@ -221,6 +223,27 @@ def safe_silhouette(X, labels, metric="cosine", max_samples=5000, seed=0):
 # -----------------------------
 # Benchmark driver
 # -----------------------------
+def eval_incremental(clusterer, stream, n, X, y_true):
+    t0 = time.perf_counter()
+    y_pred = np.empty(n, dtype=int)
+    for i, (v, _) in enumerate(stream):
+        y_pred[i] = clusterer.update(v)
+    elapsed = time.perf_counter() - t0
+    ops_sec = n / max(elapsed, 1e-9)
+    n_clu, singleton_rate, avg_sz, p99_sz = cluster_diagnostics(y_pred)
+    return {
+        "y_pred": y_pred,
+        "ops_sec": ops_sec,
+        "ARI": adjusted_rand_score(y_true, y_pred),
+        "purity": purity(y_true, y_pred),
+        "silhouette": safe_silhouette(X, y_pred, metric="cosine"),
+        "n_clusters": n_clu,
+        "singleton_rate": singleton_rate,
+        "avg_cluster_size": avg_sz,
+        "p99_cluster_size": p99_sz,
+    }
+
+
 def run_bloc_bench(n=50000, dim=384, thresh=0.6, drift=0.002, p_new=0.001,
                    use_text_embeddings=False, model_name="all-MiniLM-L6-v2",
                    kmeans_batch=4096, seed=7, out="Benchmarks/bloc_run.json",
@@ -233,29 +256,21 @@ def run_bloc_bench(n=50000, dim=384, thresh=0.6, drift=0.002, p_new=0.001,
     y_true = np.array([lab for _, lab in stream])
     print("True labels:", len(set(y_true)))
 
+    # Two incremental methods, run explicitly side by side: the NLI-based algorithm
+    # bloc_core.add_to_cluster() actually ships today, and the pre-NLI centroid-cosine
+    # approach it replaced (see SimpleIncrementalClusterer docstring above).
+    nli_res = eval_incremental(IncrementalClusterer(dim=dim, thresh=thresh), stream, n, X, y_true)
+    cos_res = eval_incremental(SimpleIncrementalClusterer(dim=dim, thresh=thresh), stream, n, X, y_true)
 
-    # Incremental
-    inc = get_incremental(dim=dim, thresh=thresh)
-    t0 = time.perf_counter()
-    y_pred_inc = np.empty(n, dtype=int)
-    for i, (v, _) in enumerate(stream):
-        y_pred_inc[i] = inc.update(v)
-    inc_elapsed = time.perf_counter() - t0
-    inc_ops_sec = n / max(inc_elapsed, 1e-9)
-
-    # Quality + diagnostics for incremental
-    inc_ari = adjusted_rand_score(y_true, y_pred_inc)
-    inc_purity = purity(y_true, y_pred_inc)
-    inc_sil = safe_silhouette(X, y_pred_inc, metric="cosine")
-    n_clu, singleton_rate, avg_sz, p99_sz = cluster_diagnostics(y_pred_inc)
     # ---- Baselines ----
-    # Cap K so baselines are valid and reasonably fast
-    # tie cap to batch size; e.g., <= 1024 when batch=4096
+    # Cap K so baselines are valid and reasonably fast; sized off the cosine-incremental's
+    # cluster count since the NLI method's count is unreliable on a vector-only stream.
     k_cap = max(2, kmeans_batch // 4)
+    n_clu_ref = cos_res["n_clusters"]
 
     # MiniBatchKMeans: true streaming via partial_fit
     def run_minibatch_kmeans_stream():
-        k_local = min(max(2, n_clu), k_cap)
+        k_local = min(max(2, n_clu_ref), k_cap)
         est = MiniBatchKMeans(n_clusters=k_local,
                               batch_size=min(1024, kmeans_batch),
                               n_init=1, random_state=seed)
@@ -270,7 +285,7 @@ def run_bloc_bench(n=50000, dim=384, thresh=0.6, drift=0.002, p_new=0.001,
 
     # KMeans: quality anchor on a subsample, then predict all
     def run_kmeans_subsample(m=kmeans_subsample):
-        k_local = min(max(2, n_clu), k_cap)
+        k_local = min(max(2, n_clu_ref), k_cap)
         rng = np.random.default_rng(seed)
         idx = rng.choice(n, size=min(n, m), replace=False)
         est = KMeans(n_clusters=k_local, n_init=10, random_state=seed)
@@ -297,18 +312,28 @@ def run_bloc_bench(n=50000, dim=384, thresh=0.6, drift=0.002, p_new=0.001,
 
     # Console table
     def row(name, ops, ari, pur, sil):
-        return f"{name:<18} | {ops:10.0f} | {ari:6.3f} | {pur:6.3f} | {sil:7.3f}"
+        return f"{name:<28} | {ops:10.0f} | {ari:6.3f} | {pur:6.3f} | {sil:7.3f}"
     print("BLOC benchmark (n={}, sigma = {}, dim={}, thresh={}, drift={}, p_new={}, text_emb={})"
           .format(n, sigma, dim, thresh, drift, p_new, use_text_embeddings))
-    print("Method             |   ops/sec  |   ARI  | Purity | Silhouette")
-    print("-----------------------------------------------------------------")
-    print(row("Incremental(BLOC)", inc_ops_sec, inc_ari, inc_purity, inc_sil))
-    print(row("KMeans (global)",   km_ops_sec,  km_ari,  km_purity,  km_sil))
-    print(row("MiniBatchKMeans",   mb_ops_sec,  mb_ari,  mb_purity,  mb_sil))
-    print(f"\nObserved clusters (inc): {n_clu} | singletons: {singleton_rate:.2%} | "
-          f"avg size: {avg_sz:.1f} | p99 size: {p99_sz:.0f} | Peak RAM ~ {peak_mb:.1f} MB")
+    print("Method                       |   ops/sec  |   ARI  | Purity | Silhouette")
+    print("-----------------------------------------------------------------------------")
+    print(row("Incremental (BLOC, NLI)",     nli_res["ops_sec"], nli_res["ARI"], nli_res["purity"], nli_res["silhouette"]))
+    print(row("Incremental (cosine, legacy)", cos_res["ops_sec"], cos_res["ARI"], cos_res["purity"], cos_res["silhouette"]))
+    print(row("KMeans (global)",             km_ops_sec, km_ari, km_purity, km_sil))
+    print(row("MiniBatchKMeans",             mb_ops_sec, mb_ari, mb_purity, mb_sil))
+    print(f"\nObserved clusters — NLI: {nli_res['n_clusters']} (singletons {nli_res['singleton_rate']:.2%}) | "
+          f"cosine: {cos_res['n_clusters']} (singletons {cos_res['singleton_rate']:.2%}) | "
+          f"Peak RAM ~ {peak_mb:.1f} MB")
 
     # JSON artifact
+    def diag(res):
+        return {
+            "n_clusters": int(res["n_clusters"]),
+            "singleton_rate": float(res["singleton_rate"]),
+            "avg_cluster_size": float(res["avg_cluster_size"]),
+            "p99_cluster_size": float(res["p99_cluster_size"]),
+        }
+
     out_obj = {
         "params": {
             "n": n, "dim": dim, "thresh": thresh, "drift": drift, "p_new": p_new,
@@ -317,20 +342,20 @@ def run_bloc_bench(n=50000, dim=384, thresh=0.6, drift=0.002, p_new=0.001,
             "kmeans_batch": kmeans_batch, "kmeans_subsample": kmeans_subsample
         },
         "ops_sec": {
-            "incremental": inc_ops_sec,
+            "incremental_nli": nli_res["ops_sec"],
+            "incremental_cosine": cos_res["ops_sec"],
             "kmeans_global": km_ops_sec,
             "minibatch": mb_ops_sec
         },
         "quality": {
-            "incremental": {"ARI": inc_ari, "purity": inc_purity, "silhouette": inc_sil},
+            "incremental_nli": {"ARI": nli_res["ARI"], "purity": nli_res["purity"], "silhouette": nli_res["silhouette"]},
+            "incremental_cosine": {"ARI": cos_res["ARI"], "purity": cos_res["purity"], "silhouette": cos_res["silhouette"]},
             "kmeans_global": {"ARI": km_ari, "purity": km_purity, "silhouette": km_sil},
             "minibatch": {"ARI": mb_ari, "purity": mb_purity, "silhouette": mb_sil},
         },
         "diagnostics": {
-            "n_clusters_inc": int(n_clu),
-            "singleton_rate": float(singleton_rate),
-            "avg_cluster_size": float(avg_sz),
-            "p99_cluster_size": float(p99_sz),
+            "incremental_nli": diag(nli_res),
+            "incremental_cosine": diag(cos_res),
         },
         "env": {
             "python": platform.python_version(),

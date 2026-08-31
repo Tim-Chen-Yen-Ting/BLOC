@@ -1,79 +1,69 @@
 # 📊 Benchmark Results
 
-We evaluated **BLOC**'s incremental clustering (`add_to_cluster`) against `KMeans` and
-`MiniBatchKMeans` baselines on a synthetic streaming dataset, using adjusted Rand index
-(ARI), purity, and cosine silhouette as quality metrics, and throughput (ops/sec) for speed.
+We evaluated two incremental clustering strategies — the NLI-based algorithm `bloc_core.add_to_cluster`
+ships today, and the pure centroid-cosine approach it replaced — against `KMeans` and `MiniBatchKMeans`
+baselines on a synthetic streaming dataset with drifting cluster centroids and stochastic cluster spawning.
+Quality: adjusted Rand index (ARI), purity, cosine silhouette. Speed: throughput (ops/sec).
 
 ## Setup
-- Stream generator (`make_stream`): starts with `k_true` Gaussian cluster centroids that
-  drift slightly each step, occasionally spawning a new cluster (`p_new`).
-- With `--text-emb`, each point is instead a sentence `"news {noise} about topic_{lab}"`
-  (`noise` drawn from a 9-word pool) embedded via STEME's `embed()`, so BLOC clusters real
-  text content rather than raw vectors.
-- Environment: Local CPU inference, Python 3.13, `all-MiniLM-L6-v2` for `--text-emb` runs.
+- Stream generator (`make_stream`): starts with `k_true` Gaussian cluster centroids that drift
+  slightly each step, occasionally spawning a new cluster (`p_new`) — no text, no `--text-emb`.
+- `Incremental (BLOC, NLI)`: today's `bloc_core.add_to_cluster`, run through the same streaming
+  interface as the baselines.
+- `Incremental (cosine, legacy)`: `SimpleIncrementalClusterer` in this benchmark file — nearest-centroid
+  cosine matching with EMA updates, standing in for `add_to_cluster`'s pre-NLI design.
+- Environment: Local CPU, Python 3.13.
 
-## ⚠️ Important caveat: this harness predates the NLI-based rewrite
+## Why both incremental methods are run
 
-`bloc_core.add_to_cluster` was rewritten to decide absorption via zero-shot NLI against
-**existing cluster names**, not centroid cosine distance (see README). That decision only
-engages when `memory['content']` is a non-empty string — with plain vectors (no `--text-emb`),
-`content` is always `""`, so every point falls through to "no cluster matched" and gets
-its own cluster. Civilizism's old `bloc_run_sanity.json` run (20k points, no `--text-emb`)
-shows exactly this: 936 clusters, 95.7% singleton rate. **That isn't a regression — it's the
-new algorithm correctly refusing to cluster on vectors with no text to reason about.** Don't
-run this benchmark without `--text-emb` and expect meaningful clustering.
+`add_to_cluster` was rewritten (2026-06-08) to decide cluster absorption via zero-shot NLI against
+**existing cluster names**, instead of centroid cosine distance. That decision only fires when
+`memory['content']` is a real string — feed it a raw embedding vector with no text and `content` is
+`""`, so the NLI path never engages at all. This benchmark's stream is vectors only (no text), which
+is exactly the setup the *original* pre-NLI benchmark (and its "0.703 ARI, beats KMeans" result) used —
+so running both algorithms side by side on it shows precisely what the NLI rewrite gave up for
+vector-only input.
 
-Even with `--text-emb`, this harness's `IncrementalClusterer` adapter (`Benchmarks/bench_bloc.py`)
-hardcodes `meta_tag_pool = []`, so new-cluster naming falls through to BLOC's last resort
-(name the cluster after the raw memory content) rather than the curated concept-label pool
-`add_to_cluster` is actually designed around (see the README example — `"Freedom"`, `"Order"`,
-etc.). Cluster identity in this benchmark is therefore "does NLI think this sentence entails an
-existing raw sentence used as a previous cluster's name" — a real code path, but not the
-intended production usage. Treat the numbers below as a smoke test of the streaming/absorption
-mechanics, not a measure of real-world clustering quality.
+## Results — run 2026-08-31
 
-## Latest run — `--text-emb`, run 2026-08-31
-
-```
-python Benchmarks/bench_bloc.py --n 2000 --thresh 0.42 --text-emb --out Benchmarks/bloc_run.json
+```bash
+python Benchmarks/bench_bloc.py --n 2000 --thresh 0.42 --out Benchmarks/bloc_run.json
 ```
 
-| Method             | ops/sec | ARI   | Purity | Silhouette |
-| ------------------ | ------: | ----: | -----: | ---------: |
-| Incremental (BLOC)  |     166 | 0.182 |  1.000 |      1.000 |
-| KMeans (global)     |     404 | 0.182 |  1.000 |      1.000 |
-| MiniBatchKMeans     |     601 | 0.182 |  1.000 |      1.000 |
+| Method                         | ops/sec | ARI       | Purity | Silhouette |
+| ------------------------------ | ------: | --------: | -----: | ---------: |
+| **Incremental (cosine, legacy)** |  63,225 | **1.000** |  1.000 |      0.342 |
+| KMeans (global)                 |   2,064 |     0.937 |  0.973 |      0.321 |
+| MiniBatchKMeans                 |     231 |     0.839 |  0.931 |      0.275 |
+| Incremental (BLOC, NLI)         |     306 |     0.000 |  1.000 |        nan |
 
-Observed clusters: 81 | singletons: 0.0% | avg size: 24.7 | p99 size: 35 | Peak RAM ~525 MB
-
-All three methods land on identical ARI/purity/silhouette. That's not a coincidence: the
-9-word noise pool × 9 true topics means only 81 distinct sentences ever get generated
-(`embed()` caches by exact string), so `X` has just 81 unique row vectors each repeated
-~24.7 times — a highly degenerate, discrete input rather than continuous semantic variation.
-Purity of 1.0 is a predictable consequence of 81 clusters mapping onto 9 true labels (more
-clusters than labels makes purity easy), and the low ARI (0.182) reflects that BLOC — like
-both KMeans baselines here — is over-segmenting relative to the 9 ground-truth topics on
-this particular synthetic setup, not that one method beats another.
+Observed clusters — cosine: 14 (0% singleton, matching the 14 true labels exactly) | NLI: 2000
+(100% singleton — every point became its own cluster) | Peak RAM ~442 MB
 
 Raw JSON: [`bloc_run.json`](./bloc_run.json).
 
 ## Key Takeaways
 
-- The benchmark harness needs `--text-emb` to exercise the current (NLI-based) algorithm at
-  all; the vector-only mode is not a valid way to benchmark this version of BLOC.
-- Even with `--text-emb`, the harness's empty `meta_tag_pool` means it's testing raw-sentence-vs-
-  raw-sentence NLI entailment, not BLOC's intended curated-label clustering — a harness rewrite
-  (real `meta_tag_pool`, richer/continuous synthetic text) would be needed for a benchmark that
-  actually reflects production usage. Flagging this rather than fixing it here, since it's a
-  harness redesign, not a sync task.
-- Ops/sec for the incremental method (166/sec) is well below both KMeans baselines here, but
-  those baselines get to see the whole batch upfront (or a large batch at a time) — this run
-  doesn't isolate a fair per-item streaming comparison.
+- **The pre-NLI cosine approach is excellent on this benchmark**: perfect ARI, recovers the exact
+  true cluster count (14), and does it at ~30x the throughput of batch `KMeans` and ~270x
+  `MiniBatchKMeans` — no retraining, one pass, streaming. This is the capability the original
+  "beats KMeans" claim was describing, and it holds up (in fact beats the historical 0.703 ARI
+  figure outright, likely due to threshold/parameter differences between then and now).
+- **Today's shipped NLI-based algorithm cannot cluster this stream at all** (ARI 0.000, every
+  point its own cluster) — not because it's worse at the same task, but because it's solving a
+  different one: it needs real text content to reason about via NLI, and this stream has none.
+  This is a genuine capability gap versus the pre-NLI design for any vector-only / pre-embedded
+  use case, not a benchmark artifact.
+- Civilizism's own production usage (`memCore.py`) always passes real memory text to
+  `add_to_cluster`, so this gap doesn't currently bite there — but it means `bloc_core` (the
+  standalone package) is no longer a drop-in replacement for "cluster arbitrary embedding
+  vectors," which the README's centroid-only description used to imply.
 
 ## Reproducing the Benchmarks
 
 ```bash
-python Benchmarks/bench_bloc.py --n 2000 --thresh 0.42 --text-emb --out Benchmarks/bloc_run.json
+python Benchmarks/bench_bloc.py --n 2000 --thresh 0.42 --out Benchmarks/bloc_run.json
 ```
-Drop `--text-emb` only if you specifically want to exercise the vector-only fallback path
-(new-cluster-per-point, by design — see caveat above).
+Add `--text-emb` to run on real sentence embeddings instead of synthetic Gaussian vectors — but
+note the synthetic text generator in this harness is a small fixed combinatorial vocabulary
+(9 words × topics), not continuous drift, so it isn't a like-for-like comparison to the table above.

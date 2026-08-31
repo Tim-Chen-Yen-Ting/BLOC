@@ -5,44 +5,58 @@
     "thresh": 0.42,
     "drift": 0.002,
     "p_new": 0.001,
-    "text_embeddings": true,
-    "model_name": "all-MiniLM-L6-v2",
+    "text_embeddings": false,
+    "model_name": null,
     "kmeans_batch": 4096,
     "kmeans_subsample": 20000
   },
   "ops_sec": {
-    "incremental": 166.3496665821283,
-    "kmeans_global": 403.7487506296654,
-    "minibatch": 601.0293890396499
+    "incremental_nli": 306.1933264893882,
+    "incremental_cosine": 63224.51339184513,
+    "kmeans_global": 2064.034609786344,
+    "minibatch": 230.70811530369988
   },
   "quality": {
-    "incremental": {
-      "ARI": 0.18186055277997415,
+    "incremental_nli": {
+      "ARI": 0.0,
       "purity": 1.0,
-      "silhouette": 0.999998152256012
+      "silhouette": NaN
+    },
+    "incremental_cosine": {
+      "ARI": 1.0,
+      "purity": 1.0,
+      "silhouette": 0.3416135311126709
     },
     "kmeans_global": {
-      "ARI": 0.18186055277997415,
-      "purity": 1.0,
-      "silhouette": 0.999998152256012
+      "ARI": 0.9364752791156494,
+      "purity": 0.973,
+      "silhouette": 0.32067784667015076
     },
     "minibatch": {
-      "ARI": 0.18186055277997415,
-      "purity": 1.0,
-      "silhouette": 0.999998152256012
+      "ARI": 0.8392761930689272,
+      "purity": 0.931,
+      "silhouette": 0.27544260025024414
     }
   },
   "diagnostics": {
-    "n_clusters_inc": 81,
-    "singleton_rate": 0.0,
-    "avg_cluster_size": 24.691358024691358,
-    "p99_cluster_size": 35.0
+    "incremental_nli": {
+      "n_clusters": 2000,
+      "singleton_rate": 1.0,
+      "avg_cluster_size": 1.0,
+      "p99_cluster_size": 1.0
+    },
+    "incremental_cosine": {
+      "n_clusters": 14,
+      "singleton_rate": 0.0,
+      "avg_cluster_size": 142.85714285714286,
+      "p99_cluster_size": 215.74
+    }
   },
   "env": {
     "python": "3.13.3",
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel"
   },
-  "peak_ram_mb": 525.3828125,
-  "timestamp": 1788167348.2768269
+  "peak_ram_mb": 441.5234375,
+  "timestamp": 1788172321.8449764
 }

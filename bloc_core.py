@@ -1,7 +1,7 @@
 import numpy as np
 from steme_core import embed, STEME_nli, cosine_similarity
 
-def add_to_cluster(memory, tag_pool=None, meta_tag_pool=None, threshold=0.15):
+def add_to_cluster(memory, tag_pool=None, meta_tag_pool=None, threshold=0.15, floor=0.0):
     """
     Adds memory to an existing or new cluster.
 
@@ -17,9 +17,13 @@ def add_to_cluster(memory, tag_pool=None, meta_tag_pool=None, threshold=0.15):
         tag_pool (list): cluster dicts: {'name', 'centroid', 'net_importance'}
         meta_tag_pool (list): predefined label strings for naming new clusters
         threshold (float): min NLI confidence to absorb into existing cluster (= 1 - CI)
+        floor (float): min NLI confidence (vs the full label pool) required to name a new
+            cluster at all — below this, the memory doesn't imply any label well enough to
+            force one, so it's left untagged instead of being crammed into the closest fit.
 
     Returns:
-        str: name of the cluster the memory was added to
+        str | None: name of the cluster the memory was added to, or None if no label
+            (existing or new) cleared its confidence bar.
     """
     content = memory['content'] if not isinstance(memory['content'], np.ndarray) else ""
     new_vec = memory['content'] if isinstance(memory['content'], np.ndarray) else embed(content)
@@ -54,7 +58,13 @@ def add_to_cluster(memory, tag_pool=None, meta_tag_pool=None, threshold=0.15):
     # No existing cluster matched — name the new one via NLI against the full label pool
     if meta_tag_pool and len(meta_tag_pool) != 0:
         labels = [m["content"] if isinstance(m, dict) else m for m in meta_tag_pool]
-        new_name = STEME_nli(content, labels, top_k=1)[0][1]['content'] if content else str(memory['content'])
+        if content:
+            best_score, best_label_dict = STEME_nli(content, labels, top_k=1)[0]
+            if best_score < floor:
+                return None
+            new_name = best_label_dict['content']
+        else:
+            new_name = str(memory['content'])
         # Guard: if a cluster with this name already exists, merge into it rather than
         # spawning a duplicate (happens when NLI score fell below threshold but the
         # best-matching label is the same as an existing cluster name).
