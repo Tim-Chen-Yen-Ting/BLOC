@@ -105,3 +105,7 @@ Designed for use in semantic cognition pipelines.
 
 ---
 > “Memory fades. Identity clusters.”
+
+---
+
+Built by [Yen-Ting (Tim) Chen](https://tim-chen-yen-ting.github.io/) · [Portfolio](https://tim-chen-yen-ting.github.io/)
